@@ -1,0 +1,134 @@
+---
+title: "Week 6 Assignment"
+author: "Mrunal Reddy Ragi"
+date: "2025-03-02"
+output: html_document
+---
+
+```{r}
+library(data.table)
+library(geosphere)
+library(GA)
+library(purrr)
+library(sf)
+
+## Load the population data
+pop.data <- data.table::fread("Mo_pop_Sim.csv")
+str(pop.data)
+frac <- 0.0001
+small.data <- pop.data[sample(1:nrow(pop.data),
+                               size = round(nrow(pop.data) * frac),
+                               replace = F), ## extract a sample of randomlychosen 1% rows
+                        ]  ## and choose all columns
+
+## Load the FQHC data
+data_path <- 'MO_2018_Federally_Qualified_Health_Center_Locations'
+fqhc.data <- data.table(as.data.frame(st_read(data_path,
+                     'MO_2018_Federally_Qualified_Health_Center_Locations')))
+```
+
+
+
+# Approach 1
+```{r}
+fqhc.coords <- fqhc.data[, .(Longitude, Latitude)]
+
+calculate_avg_distance <- function(fqhc_idx) {
+  fqhc_lon <- fqhc.coords$Longitude[fqhc_idx]
+  fqhc_lat <- fqhc.coords$Latitude[fqhc_idx]
+  distances <- distHaversine(
+    matrix(c(fqhc_lon, fqhc_lat), ncol = 2),
+    as.matrix(small.data[, .(long, lat)])
+  )
+
+  return(mean(distances) / 1609.34)
+}
+avg_distances <- sapply(1:nrow(fqhc.coords), calculate_avg_distance)
+```
+
+# Approach 2
+```{r}
+count_within_radius <- function(fqhc_idx, radius_miles = 30) {
+  fqhc_lon <- fqhc.coords$Longitude[fqhc_idx]
+  fqhc_lat <- fqhc.coords$Latitude[fqhc_idx]
+  distances <- distHaversine(
+    matrix(c(fqhc_lon, fqhc_lat), ncol = 2),
+    as.matrix(small.data[, .(long, lat)])
+  )
+  count <- sum(distances <= (radius_miles * 1609.34))
+  estimated_count <- count / frac
+  return(estimated_count)
+}
+```
+
+```{r}
+pop_counts <- sapply(1:nrow(fqhc.coords), count_within_radius)
+normalized_distances <- 1 - (avg_distances / max(avg_distances))
+normalized_pop_counts <- pop_counts / max(pop_counts)
+fitness_scores <- (normalized_distances + normalized_pop_counts) / 2
+
+fqhc.data$avg_distance <- avg_distances
+fqhc.data$pop_within_30mi <- pop_counts
+fqhc.data$fitness_score <- fitness_scores
+
+top_fqhcs <- fqhc.data[order(-fitness_scores)][1:8]
+print(top_fqhcs[, .(Facility, City, County, avg_distance, pop_within_30mi, fitness_score)])
+```
+
+
+```{r}
+# Define the fitness function
+fitness_function <- function(indices) {
+  selected_fqhcs <- fqhc.coords[indices, ]
+  total_score <- 0
+  
+  for (i in 1:nrow(selected_fqhcs)) {
+    fqhc_lon <- selected_fqhcs$Longitude[i]
+    fqhc_lat <- selected_fqhcs$Latitude[i]
+    
+    distances <- distHaversine(
+      matrix(c(fqhc_lon, fqhc_lat), ncol = 2),
+      as.matrix(small.data[, .(long, lat)])
+    )
+    
+    pop_count <- sum(distances <= (30 * 1609.34)) / frac
+    avg_distance <- mean(distances) / 1609.34
+    normalized_distance <- 1 - (avg_distance / max(avg_distances))
+    normalized_pop_count <- pop_count / max(pop_counts)
+    fitness_score <- (normalized_distance + normalized_pop_count) / 2
+    
+    total_score <- total_score + fitness_score
+  }
+  return(total_score)
+}
+
+# Define the GA model
+ga_model <- ga(
+  type = "permutation",
+  fitness = function(x) fitness_function(x),
+  lower = 1, upper = nrow(fqhc.coords),
+  popSize = 50, maxiter = 5, run = 10,
+  pmutation = 0.2,
+  elitism = 5
+)
+
+
+# Get the best solution
+best_indices <- as.vector(ga_model@solution[1, ])
+best_fqhcs <- fqhc.data[best_indices, ]
+
+print(best_fqhcs[, .(Facility, City, County, avg_distance, pop_within_30mi, fitness_score)])
+```
+
+
+The population density approach (approach 2) with its resident counting method within a 30-mile radius will determine the most suitable eight FQHCs for mental health services. Healthcare service delivery principally aims to help the greatest number of patients among limited resources thus this population density strategy matches this fundamental objective.
+
+The direct method of counting residents was chosen because it solutions the main problem of effect measurement. The start of specialized mental health service delivery requires facilities which will reach the biggest possible audience of potential patients within a reasonable distance. The average distance approach (approach 1) implements distance reduction for every resident yet its implementation can be swayed by allocation centers located in less populated regions. The population density method addresses actual access by specifying a standard distance that patients realistically travel for mental health care services.
+
+The fundamental requirement of this strategy assumes that patients are ready to journey no more than 30 miles to visit mental health service facilities. Any distance shorter than 30 miles establishes an appropriate limit for healthcare accessibility because it includes Missouri's urban locations along with rural counties. All the residents within the specified radius maintain equal probabilities for requiring mental health services while possessing equal travel capabilities to reach the facility. We accept that the simulated population data demonstrates authenticity to the real distributions of Missouri residents.
+
+I would calculate the population within thirty miles through calculating the resident count as the fitness function. The outcome would reach its peak value in this system. Selecting the eight FQHCs with the largest population counts in their respective service areas constitutes the main goal since these facilities would extend mental health services to the largest patient populations.
+
+The fitness function optimization helps healthcare providers select locations which maximize the number of patients who gain access to healthcare services. Biomedical care especially relies on this method because its expertise and resources tend to reach limited availability. The initial placement of services in densely populated regions establishes a core network which can sustain the greatest number of patients before further services are focused on less accessible territories.
+
+
